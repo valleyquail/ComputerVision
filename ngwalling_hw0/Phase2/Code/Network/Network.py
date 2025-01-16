@@ -243,7 +243,7 @@ class BasicBlock(nn.Module):
         out = F.relu(out)
         return out
 
-
+#Assisted architecture with Claude, but implemented by myself
 class CIFAR10Model_ResNet(ImageClassificationBase):
     def __init__(self, InChannels=3, OutputSize=10):
         super().__init__()
@@ -335,9 +335,9 @@ class CIFAR10Model_ResNeXt(ImageClassificationBase):
             ResNeXtBlock(128, 128, 128, cardinality, stride=1)
         )
         self.layer2 = nn.Sequential(
-            ResNeXtBlock(128, 256, 256, cardinality, stride=2),
-            ResNeXtBlock(256, 256, 256, cardinality, stride=2),
-            ResNeXtBlock(256, 256, 512, cardinality, stride=2)
+            ResNeXtBlock(128, 256, 256, cardinality*2, stride=2),
+            ResNeXtBlock(256, 256, 256, cardinality*2, stride=2),
+            ResNeXtBlock(256, 256, 512, cardinality*2, stride=2)
         )
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512, OutputSize)
@@ -373,7 +373,7 @@ class DenseBlock(nn.Module):
             x = torch.cat([x, out], 1)
         return x
 
-
+# Referenced from https://github.com/andreasveit/densenet-pytorch/blob/master/densenet.py
 class CIFAR10Model_DenseNet(ImageClassificationBase):
     def __init__(self, InChannels, OutputSize, GrowthFactor):
         """

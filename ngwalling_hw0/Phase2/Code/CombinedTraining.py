@@ -159,11 +159,11 @@ def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
             Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.25)
         case 'ResNeXt':
             model = CIFAR10Model_ResNeXt(32, OutputSize=10)
-            NumEpochs = 12
-            LearningRate = 0.05
-            MiniBatchSize = 64
-            Optimizer = torch.optim.Adam(model.parameters(), lr=LearningRate)
-            Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.25)
+            NumEpochs = 8
+            LearningRate = 0.1
+            MiniBatchSize = 80
+            Optimizer = torch.optim.SGD(model.parameters(), lr=LearningRate)
+            Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.5)
         case 'DenseNet':
             GrowthFactor = 24
             LearningRate = 0.1
@@ -222,6 +222,7 @@ def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
     validation_accuracy_dt = []
     validation_loss_dt = []
     best_accuracy = 0
+    early_stop = 0
     for Epochs in tqdm(range(StartEpoch, NumEpochs)):
         NumIterationsPerEpoch = int(NumTrainSamples / MiniBatchSize / DivTrain)
         LossThisBatch = None
@@ -274,6 +275,7 @@ def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
         outputs = []
         print('Evaluating the model on the test dataset')
         model.eval()
+
         for count in tqdm(range(len(TestSet))):
             with torch.no_grad():
                 Img, Label = TestSet[count]
@@ -282,7 +284,7 @@ def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
                 Label = torch.tensor([Label])
                 output = model.validation_step((Img, Label), device)
                 outputs.append(output)
-                # validation_loss += output['loss']
+
                 PredT = torch.argmax(output['preds']).item()
                 predictions.append(PredT)
             OutSaveT.write(str(PredT) + '\n')
@@ -293,12 +295,17 @@ def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
             torch.save({'epoch': Epochs, 'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': Optimizer.state_dict(), 'loss': LossThisBatch},
                        CheckPointPath + 'best_' + ModelName + '_model.ckpt')
+            early_stop = 0
             print('Best model saved at epoch:', Epochs)
+        early_stop += 1
         validation_accuracy_dt.append(result['acc'])
         validation_loss_dt.append(result['loss'])
         print('Validation Accuracy: ', validation_accuracy_dt[-1] * 100, "%")
         print('Validation Loss: ', validation_loss_dt[-1])
         Scheduler.step()
+        if early_stop == 2:
+            print('Early stopping at epoch:', Epochs)
+            break
     OutSaveT.close()
     Writer.close()
     print('Training Done!')
@@ -340,7 +347,7 @@ def main():
     """
     # Parse Command Line arguments
     Parser = argparse.ArgumentParser()
-    Parser.add_argument('--ModelName', default='ResNeXt', help='Model Name, Default:bn_cnn')
+    Parser.add_argument('--ModelName', default='Basic_Linear', help='Model Name, Default:bn_cnn')
     Parser.add_argument('--CheckPointPath', default='../Checkpoints/',
                         help='Path to save Checkpoints, Default: ../Checkpoints/')
     Parser.add_argument('--NumEpochs', type=int, default=12, help='Number of Epochs to Train for, Default:50')

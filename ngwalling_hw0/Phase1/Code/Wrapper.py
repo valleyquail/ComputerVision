@@ -7,7 +7,7 @@ Homework 0: Alohomora: Phase 1 Starter Code
 Colab file can be found at:
     https://colab.research.google.com/drive/1FUByhYCYAfpl8J9VxMQ1DcfITpY8qgsF
 
-Author(s): 
+Author(s):
 Prof. Nitin J. Sanket (nsanket@wpi.edu), Lening Li (lli4@wpi.edu), Gejji, Vaishnavi Vivek (vgejji@wpi.edu)
 Robotics Engineering Department,
 Worcester Polytechnic Institute
@@ -22,6 +22,7 @@ import matplotlib.colors
 
 import numpy as np
 import cv2
+from IPython.core.pylabtools import figsize
 from scipy.ndimage import rotate
 import matplotlib.pyplot as plt
 
@@ -73,7 +74,7 @@ def plot_DoG(kernel_size=63, scales=(4, 8), orientations=16, show=False):
     fig = None
     axs = None
     if show:
-        fig, axs = plt.subplots(len(scales), orientations)
+        fig, axs = plt.subplots(len(scales), orientations,figsize=(10, len(scales) * 1.2))
 
     for i, scale in enumerate(scales):
         for orientation in range(orientations):
@@ -83,7 +84,8 @@ def plot_DoG(kernel_size=63, scales=(4, 8), orientations=16, show=False):
                 axs[i, orientation].imshow(kernel, cmap='gray')
                 axs[i, orientation].axis('off')
     if show:
-        fig.tight_layout()
+        fig.tight_layout(pad=0.)  # Reduce spacing
+        plt.subplots_adjust(wspace=0.05, hspace=0.0)  # Further tighten layout
         plt.show()
     return filters
 
@@ -101,7 +103,7 @@ def make_leung_malik(size=63, sigmas=(1, np.sqrt(2), 2, 2 * np.sqrt(2)), orienta
     fig = None
     axs = None
     if show:
-        fig, axs = plt.subplots(4, 12)
+        fig, axs = plt.subplots(4, 12, figsize=(10, 4 * 1.2))
 
     for i, sigma in enumerate(sigmas[0:3]):
         for j in range(orientations):
@@ -145,7 +147,8 @@ def make_leung_malik(size=63, sigmas=(1, np.sqrt(2), 2, 2 * np.sqrt(2)), orienta
             axs[3, i + 4].imshow(kernel, cmap='gray')
             axs[3, i + 4].axis('off')
     if show:
-        fig.tight_layout()
+        fig.tight_layout(pad=0)  # Reduce spacing
+        plt.subplots_adjust(wspace=0.05, hspace=0.)  # Further tighten layout
         plt.show()
     return filters
 
@@ -176,7 +179,7 @@ def plot_garbor(size=63, sigmas=(4, 8, 12, 20, 25), orientations=8, show=False):
     fig = None
     axs = None
     if show:
-        fig, axs = plt.subplots(len(sigmas), orientations, figsize=(12, 12))
+        fig, axs = plt.subplots(len(sigmas), orientations, figsize=(10, len(sigmas) * 1.2))
     filters = []
     for i, sigma in enumerate(sigmas):
         for k in range(orientations):
@@ -188,7 +191,8 @@ def plot_garbor(size=63, sigmas=(4, 8, 12, 20, 25), orientations=8, show=False):
                 axs[i, k].axis('off')
                 filters.append(kernel)
     if show:
-        fig.tight_layout(h_pad=0.5, w_pad=0.5)
+        fig.tight_layout(pad=0.05)  # Reduce spacing
+        plt.subplots_adjust(wspace=0.05, hspace=0.05)  # Further tighten layout
         plt.show()
     return filters
 
@@ -227,7 +231,7 @@ def generate_texton_map(image, filters, show=False):
     texton_map = np.zeros((image.shape[0], image.shape[1], len(filters)))
     for i, filter in enumerate(filters):
         filter = filter.astype(np.float32)
-        texton_map[:, :, i] = cv2.filter2D(src=image,ddepth=-1 ,kernel=filter)
+        texton_map[:, :, i] = cv2.filter2D(src=image, ddepth=-1, kernel=filter)
 
     flattened = texton_map.reshape((-1, len(filters))).astype(np.float32)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
@@ -287,20 +291,24 @@ def make_half_disk(size, show=False):
     size should be even for simplicity
     """
     x, y = np.ogrid[-size / 2:size / 2 + 1, -size / 2:size / 2 + 1]
-    mask = x ** 2 + y ** 2 <= (size / 2) ** 2
+    mask = x ** 2 + y ** 2 <= (size / 2) ** 2 + 1
     mask = mask.astype(np.uint8)
     mask[:size // 2 + 1, :] *= 255
     masks = []
     for i in range(16):
         kernel = rotate(mask, i * 360 / 16, reshape=False)
+
+        kernel = np.where(kernel > 20, 255, 0)
         masks.append(kernel)
     if show:
-        fig, axs = plt.subplots(2, 8)
+        fig, axs = plt.subplots(2, 8, figsize=(12, 6))
         for i in range(8):
             axs[0, i].imshow(masks[i], cmap='gray')
             axs[0, i].axis('off')
             axs[1, i].imshow(masks[i + 8], cmap='gray')
             axs[1, i].axis('off')
+        plt.tight_layout()
+        plt.subplots_adjust(wspace=0.05, hspace=0.05)  # Further tighten layout
         plt.show()
     return masks
 
@@ -312,7 +320,7 @@ def chi_squared(image, half_disks, num_bins, name, show=False):
     chi_squared_dist = np.zeros((image.shape[0], image.shape[1], len(half_disks) // 2))
     for disk_index in range(0, len(half_disks) // 2, 2):
         for i in range(1, num_bins):
-            temp = np.where(image == i, 1, 0)
+            temp = np.where(image == i, 1, 0).astype(np.float32)
             g_i = cv2.filter2D(temp, -1, half_disks[disk_index])
             h_i = cv2.filter2D(temp, -1, half_disks[disk_index + 1])
             chi_squared_dist[:, :, disk_index // 2] += (g_i - h_i) ** 2 / (2 * (g_i + h_i + 1e-10))
@@ -330,18 +338,24 @@ def pb_lite(sobel_baseline, canny_baseline, Tg, Bg, Cg):
     """
     Combine responses to get pb-lite output
     """
-    return np.multiply((Tg + Bg + Cg) / 3, (0.5 * sobel_baseline + 0.5 * canny_baseline))
+
+    output = np.multiply(np.mean(np.stack((Tg, Bg, Cg), axis=2), axis=2),
+                         (0.3 * sobel_baseline + 0.7 * canny_baseline))
+    return output
+
 
 save_all = True
-show_all = True
-show_filters = False
+show_all = False
+show_filters = True
+
+
 def main():
     """
     Generate Difference of Gaussian Filter Bank: (DoG)
     Display all the filters in this filter bank and save image as DoG.png,
     use command "cv2.imwrite(...)"
     """
-    dog_filters = plot_DoG(kernel_size=49, scales=(2, 8), show=show_filters)
+    dog_filters = plot_DoG(show=show_filters)
     """
     Generate Leung-Malik Filter Bank: (LM)
     Display all the filters in this filter bank and save image as LM.png,
@@ -354,7 +368,7 @@ def main():
     Display all the filters in this filter bank and save image as Gabor.png,
     use command "cv2.imwrite(...)"
     """
-    garbor_filters = plot_garbor(size=49, show=show_filters)
+    garbor_filters = plot_garbor(size=63, sigmas=(2, 4, 6), show=show_filters)
     """
     Generate Half-disk masks
     Display all the Half-disk masks and save image as HDMasks.png,
@@ -438,7 +452,7 @@ def main():
             color = np.load(f"RawArrays/ColorMap_{name}.npy")
 
             gradient_tg = chi_squared(texton, half_disks, 64, "Texton Gradient", show=show_all)
-            gradient_bg = chi_squared(brightness, half_disks, 16, "Brightness Gradient" ,show=show_all)
+            gradient_bg = chi_squared(brightness, half_disks, 16, "Brightness Gradient", show=show_all)
             gradient_cg = chi_squared(color, half_disks, 16, "Color Gradient", show=show_all)
 
             plt.title("Texton Gradient")
@@ -484,12 +498,11 @@ def main():
         plt.title("Canny Baseline")
         plt.show()
 
-
         gradient_tg = np.load(f"RawArrays/Tg_{name}.npy")
         gradient_bg = np.load(f"RawArrays/Bg_{name}.npy")
         gradient_cg = np.load(f"RawArrays/Cg_{name}.npy")
 
-        pb_lite_output = pb_lite(sobel, canny, gradient_tg, gradient_bg, gradient_cg)
+        pb_lite_output = pb_lite(sobel, canny, gradient_tg, gradient_bg, gradient_cg) * 1.5
         plt.imshow(pb_lite_output, cmap='gray')
         plt.axis('off')
         plt.title("PbLite")
@@ -497,5 +510,7 @@ def main():
         # cv2.imwrite(f"Outputs/PbLite/PbLite_{name}.png", pb_lite_output)
         # break
 
+
 if __name__ == '__main__':
     main()
+    plotting

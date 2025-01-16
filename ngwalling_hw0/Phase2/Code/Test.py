@@ -44,7 +44,7 @@ import torch
 from Network.Network import *
 from Misc.MiscUtils import *
 from Misc.DataUtils import *
-
+from Phase1.Code.Plotting import plot_all
 
 # Don't generate pyc codes
 sys.dont_write_bytecode = True
@@ -91,7 +91,7 @@ def Accuracy(Pred, GT):
     Inputs: 
     Pred are the predicted labels
     GT are the ground truth labels
-    Outputs:
+      Outputs:
     Accuracy in percentage
     """
     return (np.sum(np.array(Pred)==np.array(GT))*100.0/len(Pred))
@@ -115,7 +115,7 @@ def ReadLabels(LabelsPathTest, LabelsPathPred):
         
     return LabelTest, LabelPred
 
-def ConfusionMatrix(LabelsTrue, LabelsPred):
+def ConfusionMatrix(LabelsTrue, LabelsPred, ModelName, TestType):
     """
     LabelsTrue - True labels
     LabelsPred - Predicted labels
@@ -131,7 +131,7 @@ def ConfusionMatrix(LabelsTrue, LabelsPred):
         print(str(cm[i, :]) + ' ({0})'.format(i))
     accuracy = Accuracy(LabelsPred, LabelsTrue)
     plt.imshow(cm, interpolation='nearest')
-    plt.title('Confusion Matrix for DenseNet Test')
+    plt.title('Confusion Matrix for ' + ModelName +' ' + TestType)
     plt.ylabel('Predicted label')
     plt.xlabel('True Label\n' + 'Accuracy: ' +str(accuracy))
 
@@ -146,7 +146,47 @@ def ConfusionMatrix(LabelsTrue, LabelsPred):
     print('Accuracy: '+ str(accuracy), '%')
 
 
-def TestOperation(ImageSize, ModelPath, TestSet, LabelsPathPred):
+def log_inference_times(ModelName, ModelPath, TestSet):
+    print('Running inference time for model: ', ModelName)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Device is ' + str(device))
+
+    model = None
+    match ModelName:
+        case 'Basic_Linear':
+            model = CIFAR10Model_Basic_Linear(InputSize=3 * 32 * 32, OutputSize=10)
+        case 'BN_CNN':
+            model = CIFAR10Model_BN_CNN(InputSize=3 * 32 * 32, OutputSize=10)
+        case 'ResNet':
+            model = CIFAR10Model_ResNet(InChannels=3, OutputSize=10)
+        case 'ResNeXt':
+            model = CIFAR10Model_ResNeXt(32, OutputSize=10)
+        case 'DenseNet':
+            GrowthFactor = 24
+            model = CIFAR10Model_DenseNet(InChannels=3, OutputSize=10, GrowthFactor=GrowthFactor)
+        case _:
+            print('Model not found')
+    ModelPath += ModelName + '/' + 'best_' + ModelName + '_model.ckpt'
+    CheckPoint = torch.load(ModelPath)
+    model.load_state_dict(CheckPoint['model_state_dict'])
+    num_params = 0
+    for param in model.parameters():
+        num_params += param.numel()
+    print('Number of parameters in this model are %d ' % num_params)
+    model.to(device)
+    model.eval()
+    Img, Label = TestSet[0]
+    Img, ImgOrg = ReadImages(Img)
+    Img = torch.tensor(Img).to(device)
+    start_time = tic()
+    _ = model(Img)
+    toc(start_time)
+    print('Inference time for one image is: ', toc(start_time))
+
+
+
+def TestOperation(ImageSize, ModelPath, TestSet, LabelsPathPred, ModelName):
     """
     Inputs: 
     ImageSize is the size of the image
@@ -159,7 +199,25 @@ def TestOperation(ImageSize, ModelPath, TestSet, LabelsPathPred):
     # Predict output with forward pass, MiniBatchSize for Test is 1
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device is ' + str(device))
-    model = CIFAR10Model_DenseNet(3,10, 24)
+    model = None
+
+    match ModelName:
+        case 'Basic_Linear':
+            model = CIFAR10Model_Basic_Linear(InputSize=3 * 32 * 32, OutputSize=10)
+        case 'BN_CNN':
+            model = CIFAR10Model_BN_CNN(InputSize=3 * 32 * 32, OutputSize=10)
+        case 'ResNet':
+            model = CIFAR10Model_ResNet(InChannels=3, OutputSize=10)
+        case 'ResNeXt':
+            model = CIFAR10Model_ResNeXt(32, OutputSize=10)
+        case 'DenseNet':
+            GrowthFactor = 24
+            model = CIFAR10Model_DenseNet(InChannels=3, OutputSize=10, GrowthFactor=GrowthFactor)
+        case _:
+            print('Model not found')
+
+
+
     
     CheckPoint = torch.load(ModelPath)
     model.load_state_dict(CheckPoint['model_state_dict'])
@@ -187,25 +245,47 @@ def main():
 
     # Parse Command Line arguments
     Parser = argparse.ArgumentParser()
-    Parser.add_argument('--ModelPath', dest='ModelPath', default='./../Checkpoints/DenseNet/best_DenseNet_model.ckpt', help='Path to load latest model from, Default:ModelPath')
-    Parser.add_argument('--LabelsPath', dest='LabelsPath', default='./TxtFiles/LabelsTrain.txt', help='Path of labels file, Default:./TxtFiles/LabelsTest.txt')
+
+    Parser.add_argument('--ModelName', default='ResNeXt', help='Model Name, Default:Basic_Linear')
+    Parser.add_argument('--ModelPath', dest='ModelPath', default='./../Checkpoints/', help='Path to load latest model from, Default:ModelPath')
+    Parser.add_argument('--LabelsTrainPath', dest='LabelsTrainPath', default='./TxtFiles/LabelsTrain.txt',
+                        help='Path of labels file, Default:./TxtFiles/LabelsTest.txt')
+    Parser.add_argument('--LabelsTestPath', dest='LabelsTestPath', default='./TxtFiles/LabelsTest.txt',
+                        help='Path of labels file, Default:./TxtFiles/LabelsTest.txt')
+    Parser.add_argument('--RunInference', dest='RunInference', default='False', help='Run Inference, Default:False')
     Args = Parser.parse_args()
     ModelPath = Args.ModelPath
-    LabelsPath = Args.LabelsPath
-    # TestSet = CIFAR10(root='data/', train=False)
-    TestSet = CIFAR10(root='./data', train=True, download=False)
+    LabelsTrainPath = Args.LabelsTrainPath
+    LabelsTestPath = Args.LabelsTestPath
+    ModelName = Args.ModelName
+    ModelPathFull = ModelPath + ModelName + '/' + 'best_' + ModelName + '_model.ckpt'
+
+    TestSet = CIFAR10(root='data/', train=False)
+    TrainSet = CIFAR10(root='./data', train=True, download=False)
 
     # Setup all needed parameters including file reading
     ImageSize = SetupAll()
 
     # Define PlaceHolder variables for Predicted output
-    LabelsPathPred = './TxtFiles/DenseNet/PredOut.txt' # Path to save predicted labels
+    LabelsPathPred = './TxtFiles/' + ModelName + '/PredOut.txt' # Path to save predicted labels
 
-    TestOperation(ImageSize, ModelPath, TestSet, LabelsPathPred)
+    if (Args.RunInference == 'True'):
+        log_inference_times(ModelName, ModelPath, TestSet)
 
+    # Test Validation
+    TestOperation(ImageSize, ModelPathFull, TestSet, LabelsPathPred, ModelName)
     # Plot Confusion Matrix
-    LabelsTrue, LabelsPred = ReadLabels(LabelsPath, LabelsPathPred)
-    ConfusionMatrix(LabelsTrue, LabelsPred)
+    LabelsTrue, LabelsPred = ReadLabels(LabelsTestPath, LabelsPathPred)
+    ConfusionMatrix(LabelsTrue, LabelsPred, ModelName, 'Validation')
+
+    #Train Validation
+    TestOperation(ImageSize, ModelPathFull, TrainSet, LabelsPathPred, ModelName)
+    # Plot Confusion Matrix
+    LabelsTrue, LabelsPred = ReadLabels(LabelsTrainPath, LabelsPathPred)
+    ConfusionMatrix(LabelsTrue, LabelsPred, ModelName, 'Train')
+
+    plot_all()
+
      
 if __name__ == '__main__':
     main()
