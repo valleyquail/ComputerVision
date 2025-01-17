@@ -37,20 +37,23 @@ import PIL
 import os
 import glob
 import random
-from skimage import data, exposure, img_as_float
+from skimage import data, exposure
 import matplotlib.pyplot as plt
 import time
-from torchvision.transforms import ToTensor
+from torchvision.transforms import ToTensor, Normalize
 import argparse
 import shutil
 import string
 from termcolor import colored, cprint
 import math as m
-from tqdm.notebook import tqdm
-import Misc.ImageUtils as iu
-from Network.Network import CIFAR10Model
+from tqdm.auto import tqdm
+import imgutils as iu
+from Network.Network import *
 from Misc.MiscUtils import *
 from Misc.DataUtils import *
+from Phase2.Code import Test
+from Phase2.Code.Network.Network import CIFAR10Model_Basic_Linear
+from Phase2.Code.Test import ReadImages, TestOperation
 
 # Don't generate pyc codes
 sys.dont_write_bytecode = True
@@ -80,12 +83,14 @@ def GenerateBatch(TrainSet, TrainLabels, ImageSize, MiniBatchSize):
 
         ImageNum += 1
 
+        I1, Label = TrainSet[RandIdx]
+
         ##########################################################
         # Add any standardization or data augmentation here!
         ##########################################################
-
-        I1, Label = TrainSet[RandIdx]
-
+        # Normalize the images to range [-1, 1]
+        I1 = Normalize((0.5, 0.5, 0.5), (1, 1, 1))(I1)
+        I1 = torchvision.transforms.RandomHorizontalFlip()(I1)
         # Append All Images and Mask
         I1Batch.append(I1)
         LabelBatch.append(torch.tensor(Label))
@@ -107,7 +112,7 @@ def PrettyPrint(NumEpochs, DivTrain, MiniBatchSize, NumTrainSamples, LatestFile)
 
 def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
                    NumEpochs, MiniBatchSize, SaveCheckPoint, CheckPointPath,
-                   DivTrain, LatestFile, TrainSet, LogsPath):
+                   DivTrain, LatestFile, TrainSet, TestSet, LogsPath, LabelsPath, LabelsPredPath, ModelName):
     """
     Inputs:
     TrainLabels - Labels corresponding to Train/Test
@@ -120,16 +125,58 @@ def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
     DivTrain - Divide the data by this number for Epoch calculation, use if you have a lot of dataor for debugging code
     LatestFile - Latest checkpointfile to continue training
     TrainSet - The training dataset
+    TestSet - The test dataset
     LogsPath - Path to save Tensorboard Logs
     Outputs:
     Saves Trained network in CheckPointPath and Logs to LogsPath
     """
-    # Initialize the model
-    model = CIFAR10Model(InputSize=3 * 32 * 32, OutputSize=10)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Device is ' + str(device))
+    torch.cuda.empty_cache()
+
+    model = None
+    LearningRate = 0.01
+    Optimizer = None
+    Scheduler = None
+    match ModelName:
+        case 'Basic_Linear':
+            model = CIFAR10Model_Basic_Linear(InputSize=3 * 32 * 32, OutputSize=10)
+            Optimizer = torch.optim.Adam(model.parameters(), lr=LearningRate)
+            Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.25)
+        case 'BN_CNN':
+            model = CIFAR10Model_BN_CNN(InputSize=3 * 32 * 32, OutputSize=10)
+            # NumEpochs = 12
+            # LearningRate = 0.01
+            # MiniBatchSize = 128
+            Optimizer = torch.optim.Adam(model.parameters(), lr=LearningRate)
+            Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.25)
+        case 'ResNet':
+            model = CIFAR10Model_ResNet(InChannels=3, OutputSize=10)
+            # NumEpochs = 12
+            # LearningRate = 0.01
+            # MiniBatchSize = 200
+            Optimizer = torch.optim.Adam(model.parameters(), lr=LearningRate, weight_decay=0.0001)
+            Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.25)
+        case 'ResNeXt':
+            model = CIFAR10Model_ResNeXt(32, OutputSize=10)
+            # NumEpochs = 8
+            # LearningRate = 0.1
+            # MiniBatchSize = 80
+            Optimizer = torch.optim.SGD(model.parameters(), lr=LearningRate)
+            Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.5)
+        case 'DenseNet':
+            # GrowthFactor = 24
+            # LearningRate = 0.1
+            # MiniBatchSize = 128
+            model = CIFAR10Model_DenseNet(InChannels=3, OutputSize=10, GrowthFactor=GrowthFactor)
+            Optimizer = torch.optim.SGD(model.parameters(), lr=LearningRate, weight_decay=0.00001)
+            Scheduler = torch.optim.lr_scheduler.StepLR(Optimizer, step_size=3, gamma=0.25)
+        case _:
+            print('Model not found')
+
     ###############################################
     # Fill your optimizer of choice here!
     ###############################################
-    Optimizer = ...
 
     # Tensorboard
     # Create a summary to monitor loss tensor
@@ -145,41 +192,150 @@ def TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
         StartEpoch = 0
         print('New model initialized....')
 
+    print(f"Training the {ModelName} model")
+    ###############################################
+    # Send the model to device
+    model.to(device)
+    ###############################################
+    # Prediction output data saver
+    ###############################################
+    os.makedirs(LabelsPredPath.replace('PredOut.txt', ''), exist_ok=True)
+    OutSaveT = open(LabelsPredPath, 'w')
+
+    ##########################################################
+    # Read the ground truth labels
+    ##########################################################
+    LabelsTest = None
+    if (not (os.path.isfile(LabelsPath))):
+        print('ERROR: Test Labels do not exist in ' + LabelsPath)
+        sys.exit()
+    else:
+        LabelsTest = open(LabelsPath, 'r')
+        LabelsTest = LabelsTest.read()
+        LabelsTest = map(float, LabelsTest.split())
+    LabelsTest = np.array(list(LabelsTest))
+    ##########################################################
+    # Data collection arrays
+    ##########################################################
+    train_accuracy_dt = []
+    train_loss_dt = []
+    validation_accuracy_dt = []
+    validation_loss_dt = []
+    best_accuracy = 0
+    early_stop = 0
     for Epochs in tqdm(range(StartEpoch, NumEpochs)):
         NumIterationsPerEpoch = int(NumTrainSamples / MiniBatchSize / DivTrain)
+        LossThisBatch = None
+        loss_train = 0
+        acc_train = 0
         for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
+
             Batch = GenerateBatch(TrainSet, TrainLabels, ImageSize, MiniBatchSize)
 
             # Predict output with forward pass
-            LossThisBatch = model.training_step(Batch)
-
+            LossThisBatch = model.training_step(Batch, device)
             Optimizer.zero_grad()
             LossThisBatch.backward()
             Optimizer.step()
 
+
             # Save checkpoint every some SaveCheckPoint's iterations
             if PerEpochCounter % SaveCheckPoint == 0:
                 # Save the Model learnt in this epoch
-                SaveName = CheckPointPath + str(Epochs) + 'a' + str(PerEpochCounter) + 'model.ckpt'
+                SaveName = CheckPointPath + str(Epochs) + 'a' + str(PerEpochCounter) + '_' + ModelName + '_model.ckpt'
 
                 torch.save({'epoch': Epochs, 'model_state_dict': model.state_dict(),
                             'optimizer_state_dict': Optimizer.state_dict(), 'loss': LossThisBatch}, SaveName)
                 print('\n' + SaveName + ' Model Saved...')
 
-            result = model.validation_step(Batch)
-            model.epoch_end(Epochs * NumIterationsPerEpoch + PerEpochCounter, result)
+            result = model.validation_step(Batch, device)
+            model.epoch_end(Epochs, PerEpochCounter, result)
+            loss_train += result['loss'].item()
+            acc_train += result['acc'].item()
             # Tensorboard
             Writer.add_scalar('LossEveryIter', result["loss"], Epochs * NumIterationsPerEpoch + PerEpochCounter)
             Writer.add_scalar('Accuracy', result["acc"], Epochs * NumIterationsPerEpoch + PerEpochCounter)
             # If you don't flush the tensorboard doesn't update until a lot of iterations!
             Writer.flush()
-
+        train_accuracy_dt.append(acc_train / NumIterationsPerEpoch)
+        train_loss_dt.append(loss_train / NumIterationsPerEpoch)
         # Save model every epoch
-        SaveName = CheckPointPath + str(Epochs) + 'model.ckpt'
+        SaveName = CheckPointPath + str(Epochs) + '_' + ModelName + '_model.ckpt'
         torch.save(
             {'epoch': Epochs, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': Optimizer.state_dict(),
              'loss': LossThisBatch}, SaveName)
         print('\n' + SaveName + ' Model Saved...')
+
+        ##########################################################
+        # Evaluate the model on the test dataset
+        # Collect the accuracy and loss of the validation set for plotting
+        ##########################################################
+        # validation_loss = 0
+        predictions = []
+        outputs = []
+        print('Evaluating the model on the test dataset')
+        model.eval()
+
+        for count in tqdm(range(len(TestSet))):
+            with torch.no_grad():
+                Img, Label = TestSet[count]
+                Img, _ = ReadImages(Img)
+                Img = torch.tensor(Img)
+                Label = torch.tensor([Label])
+                output = model.validation_step((Img, Label), device)
+                outputs.append(output)
+
+                PredT = torch.argmax(output['preds']).item()
+                predictions.append(PredT)
+            OutSaveT.write(str(PredT) + '\n')
+        model.train()
+        result = model.validation_epoch_end(outputs)
+        if result['acc'] > best_accuracy:
+            best_accuracy = result['acc']
+            torch.save({'epoch': Epochs, 'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': Optimizer.state_dict(), 'loss': LossThisBatch},
+                       CheckPointPath + 'best_' + ModelName + '_model.ckpt')
+            early_stop = 0
+            print('Best model saved at epoch:', Epochs)
+        early_stop += 1
+        validation_accuracy_dt.append(result['acc'])
+        validation_loss_dt.append(result['loss'])
+        print('Validation Accuracy: ', validation_accuracy_dt[-1] * 100, "%")
+        print('Validation Loss: ', validation_loss_dt[-1])
+        Scheduler.step()
+        if early_stop == 2:
+            print('Early stopping at epoch:', Epochs)
+            break
+    OutSaveT.close()
+    Writer.close()
+    print('Training Done!')
+
+    plt.plot(train_accuracy_dt)
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.title(f'{ModelName} Training Accuracy')
+    plt.show()
+
+    plt.plot(train_loss_dt)
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title(f'{ModelName} Training Loss')
+    plt.show()
+
+    plt.plot(validation_accuracy_dt)
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.title(f'{ModelName} Validation Accuracy')
+    plt.show()
+
+    plt.plot(validation_loss_dt)
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title(f'{ModelName} Validation Loss')
+    plt.show()
+
+
+train = True
 
 
 def main():
@@ -191,40 +347,62 @@ def main():
     """
     # Parse Command Line arguments
     Parser = argparse.ArgumentParser()
+    Parser.add_argument('--ModelName', default='Basic_Linear', help='Model Name, Default:bn_cnn')
     Parser.add_argument('--CheckPointPath', default='../Checkpoints/',
                         help='Path to save Checkpoints, Default: ../Checkpoints/')
-    Parser.add_argument('--NumEpochs', type=int, default=50, help='Number of Epochs to Train for, Default:50')
+    Parser.add_argument('--NumEpochs', type=int, default=12, help='Number of Epochs to Train for, Default:50')
     Parser.add_argument('--DivTrain', type=int, default=1, help='Factor to reduce Train data by per epoch, Default:1')
-    Parser.add_argument('--MiniBatchSize', type=int, default=1, help='Size of the MiniBatch to use, Default:1')
+    Parser.add_argument('--MiniBatchSize', type=int, default=128, help='Size of the MiniBatch to use, Default:1')
     Parser.add_argument('--LoadCheckPoint', type=int, default=0,
                         help='Load Model from latest Checkpoint from CheckPointsPath?, Default:0')
     Parser.add_argument('--LogsPath', default='Logs/', help='Path to save Logs for Tensorboard, Default=Logs/')
+    Parser.add_argument('--LabelsPath', dest='LabelsPath', default='./TxtFiles/',
+                        help='Path of labels file, Default:./TxtFiles/')
     TrainSet = torchvision.datasets.CIFAR10(root='./data', train=True,
-                                            download=True, transform=ToTensor())
+                                            download=False, transform=ToTensor())
+    TestSet = CIFAR10(root='data/', train=False)
 
     Args = Parser.parse_args()
+    ModelName = Args.ModelName
     NumEpochs = Args.NumEpochs
     DivTrain = float(Args.DivTrain)
     MiniBatchSize = Args.MiniBatchSize
     LoadCheckPoint = Args.LoadCheckPoint
     CheckPointPath = Args.CheckPointPath
     LogsPath = Args.LogsPath
+    LabelsPath = Args.LabelsPath
+
+    CheckPointPath = CheckPointPath + Args.ModelName + '/'
+    LogsPath = LogsPath + Args.ModelName + '/'
+    LabelsPredPath = LabelsPath + Args.ModelName + '/' + 'PredOut.txt'
+    LabelsPath = LabelsPath + 'LabelsTest.txt'
 
     # Setup all needed parameters including file reading
-    SaveCheckPoint, ImageSize, NumTrainSamples, TrainLabels, NumClasses = SetupAll(CheckPointPath)
+    DirNamesTrain, SaveCheckPoint, ImageSize, NumTrainSamples, TrainLabels, NumClasses = SetupAll("./", CheckPointPath)
 
     # Find Latest Checkpoint File
     if LoadCheckPoint == 1:
         LatestFile = FindLatestModel(CheckPointPath)
+        files = os.listdir(CheckPointPath)
+        for file in files:
+            if file.find('best') >= 0:
+                LatestFile = file.replace('.ckpt.index', '')
+                print('Loading best model:', file)
     else:
         LatestFile = None
 
     # Pretty print stats
     PrettyPrint(NumEpochs, DivTrain, MiniBatchSize, NumTrainSamples, LatestFile)
 
-    TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
-                   NumEpochs, MiniBatchSize, SaveCheckPoint, CheckPointPath,
-                   DivTrain, LatestFile, TrainSet, LogsPath)
+    if train:
+        TrainOperation(TrainLabels, NumTrainSamples, ImageSize,
+                       NumEpochs, MiniBatchSize, SaveCheckPoint, CheckPointPath,
+                       DivTrain, LatestFile, TrainSet, TestSet, LogsPath, LabelsPath, LabelsPredPath, ModelName)
+
+
+    BestModelPath = '../Checkpoints/' + ModelName + '/best_' + ModelName + '_model.ckpt'
+
+    TestOperation(3 * 32 * 32, BestModelPath, TestSet, LabelsPredPath)
 
 
 if __name__ == '__main__':

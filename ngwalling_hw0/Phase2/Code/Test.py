@@ -176,13 +176,13 @@ def log_inference_times(ModelName, ModelPath, TestSet):
     print('Number of parameters in this model are %d ' % num_params)
     model.to(device)
     model.eval()
-    Img, Label = TestSet[0]
-    Img, ImgOrg = ReadImages(Img)
-    Img = torch.tensor(Img).to(device)
     start_time = tic()
-    _ = model(Img)
-    toc(start_time)
-    print('Inference time for one image is: ', toc(start_time))
+    for i in range(100):
+        Img, Label = TestSet[i]
+        Img, ImgOrg = ReadImages(Img)
+        Img = torch.tensor(Img).to(device)
+        _ = model(Img)
+    print('Average inference time for one image is: ', toc(start_time) / 100)
 
 
 
@@ -246,13 +246,13 @@ def main():
     # Parse Command Line arguments
     Parser = argparse.ArgumentParser()
 
-    Parser.add_argument('--ModelName', default='ResNeXt', help='Model Name, Default:Basic_Linear')
+    Parser.add_argument('--ModelName', default='Basic_Linear', help='Model Name, Default:Basic_Linear')
     Parser.add_argument('--ModelPath', dest='ModelPath', default='./../Checkpoints/', help='Path to load latest model from, Default:ModelPath')
     Parser.add_argument('--LabelsTrainPath', dest='LabelsTrainPath', default='./TxtFiles/LabelsTrain.txt',
                         help='Path of labels file, Default:./TxtFiles/LabelsTest.txt')
     Parser.add_argument('--LabelsTestPath', dest='LabelsTestPath', default='./TxtFiles/LabelsTest.txt',
                         help='Path of labels file, Default:./TxtFiles/LabelsTest.txt')
-    Parser.add_argument('--RunInference', dest='RunInference', default='False', help='Run Inference, Default:False')
+    Parser.add_argument('--RunInference', dest='RunInference', default='True', help='Run Inference, Default:False')
     Args = Parser.parse_args()
     ModelPath = Args.ModelPath
     LabelsTrainPath = Args.LabelsTrainPath
@@ -271,7 +271,7 @@ def main():
 
     if (Args.RunInference == 'True'):
         log_inference_times(ModelName, ModelPath, TestSet)
-
+    return
     # Test Validation
     TestOperation(ImageSize, ModelPathFull, TestSet, LabelsPathPred, ModelName)
     # Plot Confusion Matrix

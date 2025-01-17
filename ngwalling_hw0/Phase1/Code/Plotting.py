@@ -40,10 +40,10 @@ def plot_feature_maps(base_path, image_number):
         ax.imshow(img)
         ax.set_title(title)
         ax.axis("off")
-    plt.title(f"Feature Maps for Image {image_number}")
     plt.tight_layout()
+    plt.savefig(f"{output_location}/FeatureMaps_{image_number}.png")
     plt.show()
-    plt.imsave(f"{output_location}/FeatureMaps_{image_number}.png", images)
+
 
 
 def plot_gradient_maps(base_path, image_number):
@@ -79,10 +79,10 @@ def plot_gradient_maps(base_path, image_number):
         ax.imshow(img)
         ax.set_title(title)
         ax.axis("off")
-    plt.title(f"Feature Maps for Image {image_number}")
     plt.tight_layout()
+    plt.savefig(f"{output_location}/GradientMaps_{image_number}.png")
     plt.show()
-    plt.imsave(f"{output_location}/GradientMaps_{image_number}.png", images)
+
 
 def plot_image_ground_pblite():
     output_base_path = "Outputs/PbLite/"
@@ -107,10 +107,10 @@ def plot_image_ground_pblite():
             ax.imshow(img)
             ax.set_title(title)
             ax.axis("off")
-        plt.title(f"Feature Maps for Image {i}")
+        plt.title(f"Output of PbLite Compared to Ground Truth {i}")
         plt.tight_layout()
+        plt.savefig(f"Outputs/Comparisons/Comparison_{i}.png")
         plt.show()
-        plt.imsave(f"Outputs/Comparisons/Comparison_{i}.png", images)
 
 
 

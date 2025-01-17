@@ -26,6 +26,8 @@ from IPython.core.pylabtools import figsize
 from scipy.ndimage import rotate
 import matplotlib.pyplot as plt
 
+from Phase1.Code.Plotting import plot_all
+
 
 ####################################################
 # Difference of Gaussian Filter Bank
@@ -301,7 +303,7 @@ def make_half_disk(size, show=False):
         kernel = np.where(kernel > 20, 255, 0)
         masks.append(kernel)
     if show:
-        fig, axs = plt.subplots(2, 8, figsize=(12, 6))
+        fig, axs = plt.subplots(2, 8, figsize=(12, 3))
         for i in range(8):
             axs[0, i].imshow(masks[i], cmap='gray')
             axs[0, i].axis('off')
@@ -340,7 +342,7 @@ def pb_lite(sobel_baseline, canny_baseline, Tg, Bg, Cg):
     """
 
     output = np.multiply(np.mean(np.stack((Tg, Bg, Cg), axis=2), axis=2),
-                         (0.3 * sobel_baseline + 0.7 * canny_baseline))
+                         (0.5 * sobel_baseline + 0.5 * canny_baseline))
     return output
 
 
@@ -374,9 +376,9 @@ def main():
     Display all the Half-disk masks and save image as HDMasks.png,
     use command "cv2.imwrite(...)"
     """
-    half_disks_1 = make_half_disk(7, show_filters)
-    half_disks_2 = make_half_disk(10, show_filters)
-    half_disks_3 = make_half_disk(16, show_filters)
+    half_disks_1 = make_half_disk(8, True)
+    half_disks_2 = make_half_disk(13, True)
+    half_disks_3 = make_half_disk(21, True)
     """
     Load images
     Combine filters into mega list
@@ -513,4 +515,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-    plotting
+    plot_all()
