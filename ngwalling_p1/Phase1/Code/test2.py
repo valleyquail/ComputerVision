@@ -278,8 +278,8 @@ def run_RANSAC(img1, img2, matches, threshold=10, num_iterations=1000, show: boo
 
 
 def make_homography_matrix_row(p1, p2):
-    y1, x1 = p1
-    y2, x2 = p2
+    x1, y1 = p1
+    x2, y2 = p2
     # This is a single set of rows of the A matrix
     out = np.array([[x1, y1, 1, 0, 0, 0, -x1 * x2, -y1 * x1, -x2],
                     [0, 0, 0, x1, y1, 1, -x1 * y1, -y1 * y2, -y2]])
@@ -307,8 +307,8 @@ def run_ssd_threshhold(matches, threshold, h):
     """
     inliers = []
     for p1, p2 in matches:
-        p1 = np.array([p1[1], p1[0], 1])
-        p2 = np.array([p2[1], p2[0], 1])
+        p1 = np.array([p1[0], p1[1], 1])
+        p2 = np.array([p2[0], p2[1], 1])
         p2_prime = np.dot(h, p1)
         # Normalize to make the 3rd element 1
         if p2_prime[2] == 0:
@@ -336,7 +336,7 @@ def get_h_hat(inliers):
     H /= H[2, 2]
     return H
 
-def blend_images(img1, img2, inliers, H):
+def blend_images(img1, img2, H, inliers=None):
     """
     Blend Images
     :param img1: first image
@@ -364,17 +364,17 @@ def blend_images(img1, img2, inliers, H):
     warped_img1 = cv2.warpPerspective(img1, translation, (x_max - x_min, y_max - y_min))
 
     # Transform inliers for alignment
-    img1_inliers = np.array([[p1[0], p1[1]] for p1, p2 in inliers]).reshape(-1, 1, 2).astype(np.float32)
-    img1_inliers_t = cv2.perspectiveTransform(img1_inliers, translation).reshape(-1,2)
+    # img1_inliers = np.array([[p1[1], p1[0]] for p1, p2 in inliers]).reshape(-1, 1, 2).astype(np.float32)
+    # img1_inliers_t = cv2.perspectiveTransform(img1_inliers, translation).reshape(-1,2)
     warped_one_copy = warped_img1.copy()
 
     # Preview the inliers after homography
-    for (y,x) in img1_inliers_t:
-        cv2.circle(warped_one_copy, (x.astype(np.int32), y.astype(np.int32)), 3, (0, 0, 255), 2)
+    # for (x,y) in img1_inliers_t:
+    #     cv2.circle(warped_one_copy, (x.astype(np.int32), y.astype(np.int32)), 3, (0, 0, 255), 2)
     plt.imshow(warped_one_copy)
     plt.title("Inliers after Homography")
     plt.show()
-
+    return
     img2_inliers = np.array(inliers)[:, 1].reshape(-1, 2).astype(np.float32)
 
     # Compute mean translation based on inliers
@@ -419,55 +419,36 @@ def main():
     Read a set of images for Panorama stitching
     """
     images = load_images("../Data/Train", "Set1", show=True)
-    """
-	Corner Detection
-	Save Corner detection output as corners.png
-	"""
-    """
-	Perform ANMS: Adaptive Non-Maximal Suppression
-	Save ANMS output as anms.png
-	"""
-    harris_outputs = detect_corners(images, 'Harris', show=True)
-    # outputs = run_ANMS(images, harris_outputs, 100, 'Harris', show=True)
-    # np.save("harris_anms2.npy", outputs)
 
-    # shi_tomasi_outputs = detect_corners(images, 'Shi-Tomasi', max_corners=150, show=True)
-    # outputs = run_ANMS(images, shi_tomasi_outputs, 100, 'Shi-Tomasi', show=True)
-    # np.save("shi_tomasi_anms.npy", outputs)
+    # Initialize SIFT detector
+    sift = cv2.SIFT_create()
 
-    """
-	Feature Descriptors
-	Save Feature Descriptor output as FD.png
-	"""
-    outputs = np.load("harris_anms2.npy", allow_pickle=True)
-    descriptors = extract_feature_descriptors(images, outputs)
+    # Detect keypoints and descriptors
+    kp1, des1 = sift.detectAndCompute(images[0], None)
+    kp2, des2 = sift.detectAndCompute(images[1], None)
 
-    # outputs = np.load("shi_tomasi_anms.npy", allow_pickle=True)
-    # descriptors = extract_feature_descriptors(images, outputs, 'Shi-Tomasi')
+    # Use BFMatcher to find matches
+    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+    matches = bf.match(des1, des2)
 
-    """
-	Feature Matching
-	Save Feature Matching output as matching.png
-	"""
-    matches = match_features(images[0], images[1], descriptors[0], descriptors[1], 0.8, show=True)
-    """
-	Refine: RANSAC, Estimate Homography
-	"""
-    best_inliers, H_hat = run_RANSAC(images[0], images[1], matches, 5, 2000, show=True)
-    h_cv2 = cv2.findHomography(np.array([i[0] for i in best_inliers]), np.array([i[1] for i in best_inliers]), cv2.RANSAC, 5.0)
-    print("CV2 Homography: ", h_cv2[0])
-    print("My Homography: ", H_hat)
-    print('Difference: ', h_cv2[0] - H_hat)
-    print("Normalized Difference: ", np.linalg.norm(h_cv2[0] - H_hat))
-    print("Determinant My: ", np.linalg.det(H_hat))
-    print("Determinant CV2: ", np.linalg.det(h_cv2[0]))
-    print("Determinant Difference: ", np.linalg.det(h_cv2[0]) - np.linalg.det(H_hat))
+    # Sort matches by distance
+    matches = sorted(matches, key=lambda x: x.distance)
+
+    src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+    dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+    img_matches = cv2.drawMatches(images[0], kp1, images[1], kp2, matches[:50], None,flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+
+    plt.imshow(img_matches)
+    plt.show()
+
+    # Compute homography
+    H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
 
     """
 	Image Warping + Blending
 	Save Panorama output as mypano.png
 	"""
-    blend_images(images[0], images[1], best_inliers, H_hat)
+    blend_images(images[0], images[1],H)
 
 
 if __name__ == "__main__":
