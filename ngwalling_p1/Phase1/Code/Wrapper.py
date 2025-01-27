@@ -16,10 +16,9 @@ Worcester Polytechnic Institute
 
 import numpy as np
 import cv2
-from numba.core.cgutils import raw_memcpy
-from skimage.feature import peak_local_max
 import os
 import matplotlib.pyplot as plt
+from skimage import exposure
 
 
 def show_helper(inputs, tiled=True, title=None):
@@ -157,7 +156,6 @@ def run_ANMS(images, corner_scores, num_best_corners, method: str, show: bool = 
         # Find the minimum squared distance where a higher score exists
         ranking = np.where(score_dominates, pairwise_dist_sq, np.inf).min(axis=1)
 
-
         ranking_indices = np.argsort(ranking)
         best_corners = [indices[i] for i in ranking_indices[-num_best_corners:]]
         anms_outputs.append(best_corners)
@@ -270,8 +268,6 @@ def run_RANSAC(img1, img2, matches, threshold=10, num_iterations=1000, show: boo
             cv2.line(img, (x1, y1), (x2 + img1.shape[1], y2), (255, 0, 0), 2)
         show_helper([img], False, title="RANSAC Output")
 
-
-
     print("Number of Inliers: ", len(best_inliers))
     print("Number of Features: ", num_features)
     return best_inliers, H_hat
@@ -307,15 +303,15 @@ def run_ssd_threshhold(matches, threshold, h):
     """
     inliers = []
     for p1, p2 in matches:
-        p1 = np.array([p1[1], p1[0], 1])
-        p2 = np.array([p2[1], p2[0], 1])
-        p2_prime = np.dot(h, p1)
+        p1_temp = np.array([p1[1], p1[0], 1])
+        p2_temp = np.array([p2[1], p2[0], 1])
+        p2_prime = np.dot(h, p1_temp)
         # Normalize to make the 3rd element 1
         if p2_prime[2] == 0:
             p2_prime[2] = 0.00001
         p2_prime /= p2_prime[2]
-        if np.linalg.norm(p2_prime - p2) < threshold:
-            inliers.append([p1[:2], p2[:2]])
+        if np.linalg.norm(p2_prime - p2_temp) < threshold:
+            inliers.append([p1, p2])
     return inliers
 
 
@@ -326,8 +322,8 @@ def get_h_hat(inliers):
     """
     A = []
     for p1, p2 in inliers:
-        x1, y1 = p1
-        x2, y2 = p2
+        y1, x1 = p1
+        y2, x2 = p2
         A.append([-x1, -y1, -1, 0, 0, 0, x2 * x1, x2 * y1, x2])
         A.append([0, 0, 0, -x1, -y1, -1, y2 * x1, y2 * y1, y2])
     A = np.array(A)
@@ -335,6 +331,7 @@ def get_h_hat(inliers):
     H = Vt[-1, :].reshape(3, 3)
     H /= H[2, 2]
     return H
+
 
 def blend_images(img1, img2, inliers, H):
     """
@@ -347,45 +344,55 @@ def blend_images(img1, img2, inliers, H):
     """
     # Get image dimensions
     h1, w1 = img1.shape[:2]
-    h2, w2 = img2.shape[:2]
 
     # Compute warped image 1 corners
     img1_corners = np.array([[0, 0], [0, h1], [w1, h1], [w1, 0]], dtype=np.float32).reshape(-1, 1, 2)
     img1_corners_t = cv2.perspectiveTransform(img1_corners, H)
-
     # Compute warped image bounds
     x_min, y_min = np.floor(img1_corners_t.min(axis=0).ravel()).astype(np.int32)
     x_max, y_max = np.floor(img1_corners_t.max(axis=0).ravel()).astype(np.int32)
 
     # Compute translation to move images into positive coordinate space
     translation = np.array([[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]]).dot(H)
-
+    x_size = x_max - x_min + w1
+    y_size = y_max - y_min + h1
     # Warp img1 using homography
-    warped_img1 = cv2.warpPerspective(img1, translation, (x_max - x_min, y_max - y_min))
+    warped_img1 = cv2.warpPerspective(img1, translation, (x_size, y_size))
 
     # Transform inliers for alignment
-    img1_inliers = np.array([[p1[0], p1[1]] for p1, p2 in inliers]).reshape(-1, 1, 2).astype(np.float32)
-    img1_inliers_t = cv2.perspectiveTransform(img1_inliers, translation).reshape(-1,2)
-    warped_one_copy = warped_img1.copy()
+    img1_inliers = np.array([[p1[1], p1[0]] for p1, p2 in inliers]).reshape(-1, 1, 2).astype(np.float32)
+    img1_inliers_t = cv2.perspectiveTransform(img1_inliers, translation).reshape(-1, 2)
 
-    # Preview the inliers after homography
-    for (y,x) in img1_inliers_t:
-        cv2.circle(warped_one_copy, (x.astype(np.int32), y.astype(np.int32)), 3, (0, 0, 255), 2)
-    plt.imshow(warped_one_copy)
-    plt.title("Inliers after Homography")
-    plt.show()
+    # # Preview the inliers after homography
+    # warped_one_copy = warped_img1.copy()
+    # for (x, y) in img1_inliers_t:
+    #     cv2.circle(warped_one_copy, (x.astype(np.int32), y.astype(np.int32)), 3, (0, 0, 255), 2)
+    # plt.imshow(warped_one_copy)
+    # plt.title("Inliers after Homography")
+    # plt.show()
 
-    img2_inliers = np.array(inliers)[:, 1].reshape(-1, 2).astype(np.float32)
+    img2_inliers = np.array([[p2[1], p2[0]] for p1, p2 in inliers]).reshape(-1, 2).astype(np.float32)
 
     # Compute mean translation based on inliers
-    mean_translation = np.mean(img1_inliers_t - img2_inliers, axis=0)
-
+    mean_translation_img1 = np.mean(img1_inliers_t - img2_inliers, axis=0).reshape(-1)
+    mean_translation_img2 = np.zeros(2)
+    # Deal with translations and clipping the image in case some of the movements are negative
+    # If one of the movements are negative and applied to image one, set the translation to zero for image one
+    # and then make image two move in the opposite direction
+    if mean_translation_img1[0] < 0:
+        mean_translation_img2[0] = -mean_translation_img1[0]
+        mean_translation_img1[0] = 0
+    if mean_translation_img1[1] < 0:
+        mean_translation_img2[1] = -mean_translation_img1[1]
+        mean_translation_img1[1] = 0
     # Apply translation to img2
-    translation_mat = np.array([[1, 0, mean_translation[0]], [0, 1, mean_translation[1]], [0, 0, 1]])
-    warped_img2 = cv2.warpPerspective(img2, translation_mat, (x_max - x_min, y_max - y_min))
+    translation_mat_1 = np.array([[1, 0, mean_translation_img1[0]], [0, 1, mean_translation_img1[1]], [0, 0, 1]])
+    translation_mat_2 = np.array([[1, 0, mean_translation_img2[0]], [0, 1, mean_translation_img2[1]], [0, 0, 1]])
 
-    # Create an empty canvas for final blending
-    stitched = np.zeros((y_max - y_min +  h2, x_max - x_min + w2, 3), dtype=np.uint8)
+    img2 = perform_color_correction(img2, img1, inliers)
+
+    warped_img2 = cv2.warpPerspective(img2, translation_mat_1, (x_size, y_size))
+    warped_img1 = cv2.warpPerspective(warped_img1, translation_mat_2, (x_size, y_size))
 
     # Blend images using alpha blending for smoother transitions
     mask1 = (warped_img1 > 0).astype(np.float32)
@@ -399,12 +406,64 @@ def blend_images(img1, img2, inliers, H):
     alpha = 0.5
     stitched[overlap] = (alpha * warped_img1[overlap] + (1 - alpha) * warped_img2[overlap]).astype(np.uint8)
 
+
+    stitched = remove_black_space(stitched)
     # Display results
     plt.imshow(cv2.cvtColor(stitched, cv2.COLOR_BGR2RGB))
     plt.axis("off")
     plt.show()
-
     return stitched
+
+
+def perform_color_correction(img1, img2, inliers):
+    """
+    Perform Color Correction
+    :param img1: first image --> image to be color corrected
+    :param img2: second image --> reference image
+    :param inliers: the matched feature points used to compute the homography
+    Converts the color space of the first image to match the second image.
+    """
+    kernelSize = 41
+    mean_colors = np.zeros(3)  # For mean color difference across all inliers
+
+    for (y1, x1), (y2, x2) in inliers:
+        # Get small patches around the matched points (inliers) from both images
+        patch1 = cv2.getRectSubPix(img1, (kernelSize, kernelSize), (x1.astype(np.float32), y1.astype(np.float32)))
+        patch2 = cv2.getRectSubPix(img2, (kernelSize, kernelSize), (x2.astype(np.float32), y2.astype(np.float32)))
+
+        # Apply Gaussian blur to patches to reduce noise
+        blurred1 = cv2.GaussianBlur(patch1, (kernelSize, kernelSize), 0)
+        blurred2 = cv2.GaussianBlur(patch2, (kernelSize, kernelSize), 0)
+
+        # Subsample both patches to 8x8, then reshape to a flat array of color values
+        subsampled1 = cv2.resize(blurred1, (8, 8)).reshape(-1, 3)
+        subsampled2 = cv2.resize(blurred2, (8, 8)).reshape(-1, 3)
+
+        # Calculate the mean color difference between the two patches
+        mean_colors += np.mean(subsampled1, axis=0) - np.mean(subsampled2, axis=0)
+
+    # Average the color differences over all inliers
+    mean_colors /= len(inliers)
+
+    # Convert img1 to float32 to avoid overflow during correction
+    img1_float = img1.astype(np.float32)
+    # Correct the color of img1 by adding the calculated mean color difference
+    img1_corrected = img1_float + mean_colors
+    # Clip the values to stay within valid color range [0, 255]
+    img1_corrected = np.clip(img1_corrected, 0, 255).astype(np.uint8)
+
+    return img1_corrected
+
+def remove_black_space(img):
+    """
+    Remove the black space (background) around an image by cropping the non-black content.
+    :param img: Input image (with black space to be removed)
+    :return: Cropped image without the black space
+    """
+    y_nonzero, x_nonzero, _ = np.nonzero(img)
+    return img[np.min(y_nonzero):np.max(y_nonzero), np.min(x_nonzero):np.max(x_nonzero)]
+
+
 
 
 def main():
@@ -454,14 +513,16 @@ def main():
 	Refine: RANSAC, Estimate Homography
 	"""
     best_inliers, H_hat = run_RANSAC(images[0], images[1], matches, 5, 2000, show=True)
-    h_cv2 = cv2.findHomography(np.array([i[0] for i in best_inliers]), np.array([i[1] for i in best_inliers]), cv2.RANSAC, 5.0)
-    print("CV2 Homography: ", h_cv2[0])
-    print("My Homography: ", H_hat)
-    print('Difference: ', h_cv2[0] - H_hat)
-    print("Normalized Difference: ", np.linalg.norm(h_cv2[0] - H_hat))
-    print("Determinant My: ", np.linalg.det(H_hat))
-    print("Determinant CV2: ", np.linalg.det(h_cv2[0]))
-    print("Determinant Difference: ", np.linalg.det(h_cv2[0]) - np.linalg.det(H_hat))
+    # Verify the homography matrix using cv2.findHomography as a reference
+    # h_cv2 = cv2.findHomography(np.array([i[0] for i in best_inliers]), np.array([i[1] for i in best_inliers]),
+    #                            cv2.RANSAC, 5.0)
+    # print("CV2 Homography: ", h_cv2[0])
+    # print("My Homography: ", H_hat)
+    # print('Difference: ', h_cv2[0] - H_hat)
+    # print("Normalized Difference: ", np.linalg.norm(h_cv2[0] - H_hat))
+    # print("Determinant My: ", np.linalg.det(H_hat))
+    # print("Determinant CV2: ", np.linalg.det(h_cv2[0]))
+    # print("Determinant Difference: ", np.linalg.det(h_cv2[0]) - np.linalg.det(H_hat))
 
     """
 	Image Warping + Blending
