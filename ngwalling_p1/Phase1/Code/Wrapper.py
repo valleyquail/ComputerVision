@@ -11,6 +11,7 @@ Lening Li (lli4@wpi.edu)
 Teaching Assistant in Robotics Engineering,
 Worcester Polytechnic Institute
 """
+import argparse
 
 # Code starts here:
 
@@ -21,7 +22,7 @@ import matplotlib.pyplot as plt
 from skimage import exposure
 
 
-def show_helper(inputs, tiled=True, title=None):
+def show_helper(inputs, tiled=True, title=None, save=False):
     if tiled:
         fig, axes = plt.subplots(1, len(inputs))
         for i, img in enumerate(inputs):
@@ -29,13 +30,18 @@ def show_helper(inputs, tiled=True, title=None):
             axes[i].axis('off')
             if title:
                 axes[i].set_title(title)
+        plt.tight_layout()
+        if save:
+            plt.savefig(os.path.join(SavePath, title) + '.png')
         plt.show()
     else:
-        for img in inputs:
+        for i, img in enumerate(inputs):
             plt.imshow(img)
             plt.axis('off')
             if title:
                 plt.title(title)
+            if save:
+                plt.savefig(os.path.join(SavePath, title) + str(i) + '.png')
             plt.show()
 
 
@@ -53,7 +59,7 @@ def load_images(path: str, set: str, show: bool = False):
     return images
 
 
-def detect_corners(images, method: str, max_corners=100, show: bool = False):
+def detect_corners(images, method: str, max_corners=100, show: bool = False, save: bool = True):
     """
     Corner Detection
     :param images: list of images
@@ -63,25 +69,33 @@ def detect_corners(images, method: str, max_corners=100, show: bool = False):
     outputs = []
     # convert to grayscale
     grayscales = [cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) for img in images]
-    if method == 'Harris':
-        for img in grayscales:
-            corners = cv2.cornerHarris(img, 4, 3, 0.04)
+    for img in grayscales:
+        _, mask = cv2.threshold(img, 1, 255, cv2.THRESH_BINARY)
+        if method == 'Harris':
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                # Get the largest contour (assumes black border is the outermost area)
+                largest_contour = max(contours, key=cv2.contourArea)
+                mask = np.zeros_like(img)
+                cv2.drawContours(mask, [largest_contour], -1, 255, thickness=cv2.FILLED)
+            else:
+                mask = np.ones_like(img) * 255
+                # Apply the mask to the image
+            gray_masked = cv2.bitwise_and(img, img, mask=mask)
+            corners = cv2.cornerHarris(gray_masked, 4, 3, 0.04)
             outputs.append(corners)
-    elif method == 'Shi-Tomasi':
-        for img in grayscales:
-            corners = cv2.goodFeaturesToTrack(img, maxCorners=max_corners, qualityLevel=0.01, minDistance=20)
+        elif method == 'Shi-Tomasi':
+            corners = cv2.goodFeaturesToTrack(img, maxCorners=max_corners, qualityLevel=0.01, minDistance=30, mask=mask, blockSize=7)
             corners = np.int32(corners)
             outputs.append(corners)
-    else:
-        raise ValueError("Invalid corner detection method")
-    if show:
+        else:
+            raise ValueError("Invalid corner detection method")
+    if show or save:
         corners = []
         for img, dst in zip(images, outputs):
             # Make a copy of the image as to not modify the original
             img = img.copy()
             if 'Shi-Tomasi' == method:
-                # dst = cv2.dilate(dst, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
-                # dst = dst.astype(np.int32)
                 for i in dst:
                     x, y = i.ravel()
                     cv2.circle(img, (x, y), 3, 255, 3)
@@ -89,11 +103,11 @@ def detect_corners(images, method: str, max_corners=100, show: bool = False):
             else:
                 img[dst > 0.01 * dst.max()] = [255, 0, 0]
                 corners.append(img)
-        show_helper(corners, False)
+        show_helper(corners, False, 'corners', save=save)
     return outputs
 
 
-def run_ANMS(images, corner_scores, num_best_corners, method: str, show: bool = False):
+def run_ANMS(images, corner_scores, num_best_corners, method: str, show: bool = False, save=False):
     """
     Run Adaptive Non-Maximal Suppression
     :param corner_scores: list of corner scores
@@ -111,14 +125,10 @@ def run_ANMS(images, corner_scores, num_best_corners, method: str, show: bool = 
         images = [images]
     if method == 'Harris':
         for score in corner_scores:
-            # score = peak_local_max(score, min_distance=5)
-            # corner_indices.append(score)
-            corner_indices.append(np.argwhere(score > 0.05 * score.max()))
+            corner_indices.append(np.argwhere(score > 0.005 * score.max()))
     elif method == 'Shi-Tomasi':
         print("Shi-Tomasi already does ANMS")
         return corner_scores
-        # for score in corner_scores:
-        #     corner_indices.append([i.ravel().astype(np.uint32) for i in score])
     else:
         raise ValueError("Invalid corner detection method")
 
@@ -160,14 +170,14 @@ def run_ANMS(images, corner_scores, num_best_corners, method: str, show: bool = 
         best_corners = [indices[i] for i in ranking_indices[-num_best_corners:]]
         anms_outputs.append(best_corners)
 
-    if show:
+    if show or save:
         show_array = []
         for img, corners in zip(images, anms_outputs):
             img = img.copy()
             for (y, x) in corners:
                 cv2.circle(img, (x, y), 3, 255, 3)
             show_array.append(img)
-        show_helper(show_array, False, 'ANMS Output')
+        show_helper(show_array, False, 'anms', save=save)
     return anms_outputs
 
 
@@ -200,7 +210,7 @@ def extract_feature_descriptors(images, corners, method='Harris'):
     return outputs
 
 
-def match_features(img1, img2, descriptors1, descriptors2, ratio_thresh, show: bool = False):
+def match_features(img1, img2, descriptors1, descriptors2, ratio_thresh, show: bool = False, save=False):
     """
     Match Features
     :param image1: first image
@@ -226,19 +236,30 @@ def match_features(img1, img2, descriptors1, descriptors2, ratio_thresh, show: b
         if best_distance / second_best_distance < ratio_thresh:
             matches.append([desc1[0], best_match[0]])
 
-    if show:
-        img = np.concatenate((img1, img2), axis=1)
-        for (y1, x1), (y2, x2) in matches:
-            cv2.circle(img, (x1, y1), 3, (0, 0, 255), 2)
-            cv2.circle(img, (x2 + img1.shape[1], y2), 3, (0, 0, 255), 2)
-            cv2.line(img, (x1, y1), (x2 + img1.shape[1], y2), (255, 0, 0), 2)
-        show_helper([img], False)
+    if show or save:
+        # Create cv2.KeyPoint objects for descriptors
+        keypoints1 = [cv2.KeyPoint(p[1].astype(np.float32), p[0].astype(np.float32), 1) for p in
+                      np.array(descriptors1)[:, 0].tolist()]
+        keypoints2 = [cv2.KeyPoint(p[1].astype(np.float32), p[0].astype(np.float32), 1) for p in
+                      np.array(descriptors2)[:, 0].tolist()]
+        matchescv = [cv2.DMatch(i, i, 0) for i in range(len(matches))]
+        # Draw the matches
+        img_matches = cv2.drawMatches(img1, keypoints1, img2, keypoints2, matchescv, None, matchesThickness=2,
+                                      matchColor=(0, 255, 0), singlePointColor=(0, 0, 255),
+                                      flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+
+        # img = np.concatenate((img1, img2), axis=1)
+        # for (y1, x1), (y2, x2) in matches:
+        #     cv2.circle(img, (x1, y1), 3, (0, 0, 255), 2)
+        #     cv2.circle(img, (x2 + img1.shape[1], y2), 3, (0, 0, 255), 2)
+        #     cv2.line(img, (x1, y1), (x2 + img1.shape[1], y2), (255, 0, 0), 2)
+        show_helper([img_matches], False, 'matching', save=save)
     return matches
 
 
 # Note: RANSAC is using a self-implemented homography matrix calculation
 # This could be replaced with the cv2.getPerspectiveTransform function
-def run_RANSAC(img1, img2, matches, threshold=10, num_iterations=1000, show: bool = False):
+def run_RANSAC(img1, img2, matches, threshold=10, num_iterations=2000, show: bool = False, save=False):
     """
     Run RANSAC
     :param matches: list of matches
@@ -258,15 +279,17 @@ def run_RANSAC(img1, img2, matches, threshold=10, num_iterations=1000, show: boo
             best_percent = percent_match
             best_inliers = inliers
             print(f"Best Percent: {best_percent}")
+
     H_hat = get_h_hat(best_inliers)
 
     if show:
-        img = np.concatenate((img1, img2), axis=1)
-        for (y1, x1), (y2, x2) in best_inliers:
-            cv2.circle(img, (x1, y1), 3, (0, 0, 255), 2)
-            cv2.circle(img, (x2 + img1.shape[1], y2), 3, (0, 0, 255), 2)
-            cv2.line(img, (x1, y1), (x2 + img1.shape[1], y2), (255, 0, 0), 2)
-        show_helper([img], False, title="RANSAC Output")
+        inliers1 = [cv2.KeyPoint(float(p1[1]), float(p1[0]), 1) for p1, p2 in best_inliers]
+        inliers2 = [cv2.KeyPoint(float(p2[1]), float(p2[0]), 1) for p1, p2 in best_inliers]
+        matchescv = [cv2.DMatch(i, i, 0) for i in range(len(best_inliers))]
+        img_matches = cv2.drawMatches(img1, inliers1, img2, inliers2, matchescv, None, matchesThickness=2,
+                                      matchColor=(0, 255, 0), singlePointColor=(0, 0, 255),
+                                      flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+        show_helper([img_matches], False, title="RANSAC", save=save)
 
     print("Number of Inliers: ", len(best_inliers))
     print("Number of Features: ", num_features)
@@ -333,7 +356,7 @@ def get_h_hat(inliers):
     return H
 
 
-def blend_images(img1, img2, inliers, H):
+def blend_images(img1, img2, inliers, H, mode='alpha'):
     """
     Blend Images
     :param img1: first image
@@ -363,13 +386,13 @@ def blend_images(img1, img2, inliers, H):
     img1_inliers = np.array([[p1[1], p1[0]] for p1, p2 in inliers]).reshape(-1, 1, 2).astype(np.float32)
     img1_inliers_t = cv2.perspectiveTransform(img1_inliers, translation).reshape(-1, 2)
 
-    # # Preview the inliers after homography
-    # warped_one_copy = warped_img1.copy()
-    # for (x, y) in img1_inliers_t:
-    #     cv2.circle(warped_one_copy, (x.astype(np.int32), y.astype(np.int32)), 3, (0, 0, 255), 2)
-    # plt.imshow(warped_one_copy)
-    # plt.title("Inliers after Homography")
-    # plt.show()
+    # Preview the inliers after homography
+    warped_one_copy = warped_img1.copy()
+    for (x, y) in img1_inliers_t:
+        cv2.circle(warped_one_copy, (x.astype(np.int32), y.astype(np.int32)), 3, (0, 0, 255), 2)
+    plt.imshow(warped_one_copy)
+    plt.title("Inliers_after_Homography")
+    plt.show()
 
     img2_inliers = np.array([[p2[1], p2[0]] for p1, p2 in inliers]).reshape(-1, 2).astype(np.float32)
 
@@ -386,33 +409,33 @@ def blend_images(img1, img2, inliers, H):
         mean_translation_img2[1] = -mean_translation_img1[1]
         mean_translation_img1[1] = 0
     # Apply translation to img2
-    translation_mat_1 = np.array([[1, 0, mean_translation_img1[0]], [0, 1, mean_translation_img1[1]], [0, 0, 1]])
-    translation_mat_2 = np.array([[1, 0, mean_translation_img2[0]], [0, 1, mean_translation_img2[1]], [0, 0, 1]])
+    translation_mat_img2 = np.array([[1, 0, mean_translation_img1[0]], [0, 1, mean_translation_img1[1]], [0, 0, 1]])
+    translation_mat_img1 = np.array([[1, 0, mean_translation_img2[0]], [0, 1, mean_translation_img2[1]], [0, 0, 1]])
 
-    img2 = perform_color_correction(img2, img1, inliers)
+    # img2 = perform_color_correction(img2, img1, inliers)
 
-    warped_img2 = cv2.warpPerspective(img2, translation_mat_1, (x_size, y_size))
-    warped_img1 = cv2.warpPerspective(warped_img1, translation_mat_2, (x_size, y_size))
+    warped_img2 = cv2.warpPerspective(img2, translation_mat_img2, (x_size, y_size))
+    warped_img1 = cv2.warpPerspective(warped_img1, translation_mat_img1, (x_size, y_size))
 
-    # Blend images using alpha blending for smoother transitions
-    mask1 = (warped_img1 > 0).astype(np.float32)
-    mask2 = (warped_img2 > 0).astype(np.float32)
-    overlap = (mask1 + mask2) > 1
-
+    mask2 = (warped_img2 > 0).astype(np.uint8)
     stitched = warped_img1.copy()
     stitched[warped_img2 > 0] = warped_img2[warped_img2 > 0]
 
-    # Blend overlapping areas
-    alpha = 0.5
-    stitched[overlap] = (alpha * warped_img1[overlap] + (1 - alpha) * warped_img2[overlap]).astype(np.uint8)
+    if mode == 'alpha':
+        # Blend images using alpha blending for smoother transitions
+        mask1 = (warped_img1 > 0).astype(np.uint8)
+        overlap = (mask1 + mask2) > 1
+        alpha = 0.5
+        stitched[overlap] = (alpha * warped_img1[overlap] + (1 - alpha) * warped_img2[overlap]).astype(np.uint8)
+        output = stitched
+    else:
+        # Blend images using seamless cloning/poisson blending
+        temp = remove_black_space(stitched)
+        center = (temp.shape[1] // 2, temp.shape[0] // 2)
+        output = cv2.seamlessClone(warped_img2, stitched, mask2, center, cv2.MIXED_CLONE)
+    blended_img = remove_black_space(output)
 
-
-    stitched = remove_black_space(stitched)
-    # Display results
-    plt.imshow(cv2.cvtColor(stitched, cv2.COLOR_BGR2RGB))
-    plt.axis("off")
-    plt.show()
-    return stitched
+    return blended_img
 
 
 def perform_color_correction(img1, img2, inliers):
@@ -445,14 +468,15 @@ def perform_color_correction(img1, img2, inliers):
     # Average the color differences over all inliers
     mean_colors /= len(inliers)
 
-    # Convert img1 to float32 to avoid overflow during correction
-    img1_float = img1.astype(np.float32)
-    # Correct the color of img1 by adding the calculated mean color difference
-    img1_corrected = img1_float + mean_colors
-    # Clip the values to stay within valid color range [0, 255]
+    mask = img1 > 1  # Boolean mask for non-black pixels
+    # Apply mean color correction only where mask is True
+    img1_corrected = img1.astype(np.float32)
+    img1_corrected += mask * mean_colors
+    # Clip and convert back to uint8
     img1_corrected = np.clip(img1_corrected, 0, 255).astype(np.uint8)
 
     return img1_corrected
+
 
 def remove_black_space(img):
     """
@@ -464,55 +488,75 @@ def remove_black_space(img):
     return img[np.min(y_nonzero):np.max(y_nonzero), np.min(x_nonzero):np.max(x_nonzero)]
 
 
+def make_panorama(images, numFeatures, threshold, iterations, method, mode, show=True, save=False):
+    base_image = images[0]
+    # Queue to keep track of images to be stitched
+    image_queue = [[0, img] for img in images[1:]]
+    skipped = []
+    while len(image_queue) > 0:
+        img1 = base_image
+        count, img2 = image_queue.pop(0)
+        images = [img2, img1]
+        if method == 'Harris':
+            harris_outputs = detect_corners([img2, img1], 'Harris', show=True, save=save)
+            outputs = run_ANMS(images, harris_outputs, numFeatures + 10 * count, 'Harris', show=True, save=save)
+            descriptors = extract_feature_descriptors(images, outputs)
+        else:
+            outputs = detect_corners([img2, img1], 'Shi-Tomasi', max_corners=numFeatures, show=True,
+                                                save=save)
+            descriptors = extract_feature_descriptors(images, outputs, 'Shi-Tomasi')
+
+        matches = match_features(images[0], images[1], descriptors[0], descriptors[1], 0.8, show=True)
+        if len(matches) < 20:
+            print("Not enough matches found, skipping this image")
+            count += 1
+            if count < 5:
+                image_queue.append([count, img2])
+            else:
+                skipped.append(img2)
+                print("Too many failed attempts for this image, skipping")
+            continue
+        best_inliers, H_hat = run_RANSAC(images[0], images[1], matches, threshold, iterations, True)
+        if len(best_inliers) < 5:
+            print("Not enough percentage of inliers, skipping this image")
+            count += 1
+            if count < 5:
+                image_queue.append([count, img2])
+            else:
+                skipped.append(img2)
+                print("Too many failed attempts for this image, skipping")
+            continue
+        base_image = blend_images(images[0], images[1], best_inliers, H_hat, mode=mode)
+        # Increase the number of features since the image is now larger
+        numFeatures += 50
+        # Make sure it only saves once
+        save = False
+    if show:
+        if len(skipped) > 0:
+            show_helper(skipped, True, 'Skipped Images')
+        plt.imshow(base_image)
+        plt.axis('off')
+        plt.title('Panorama')
+        plt.imsave(os.path.join(SavePath, 'mypano.png'), base_image)
+        plt.show()
+    return base_image
 
 
-def main():
-    # Add any Command Line arguments here
-    # Parser = argparse.ArgumentParser()
-    # Parser.add_argument('--NumFeatures', default=100, help='Number of best features to extract from each image, Default:100')
+def stitch_pair(img1, img2, numFeatures, threshold, iterations, method, show):
+    images = [img1, img2]
+    if method == 'Harris':
+        harris_outputs = detect_corners(images, 'Harris', show=True)
+        outputs = run_ANMS(images, harris_outputs, numFeatures, 'Harris', show=True)
+        descriptors = extract_feature_descriptors(images, outputs)
+    else:
+        shi_tomasi_outputs = detect_corners(images, 'Shi-Tomasi', max_corners=numFeatures + 50, show=True)
+        outputs = run_ANMS(images, shi_tomasi_outputs, numFeatures, 'Shi-Tomasi', show=True)
+        descriptors = extract_feature_descriptors(images, outputs, 'Shi-Tomasi')
 
-    # Args = Parser.parse_args()
-    # NumFeatures = Args.NumFeatures
+    matches = match_features(images[0], images[1], descriptors[0], descriptors[1], 0.6, show=True)
 
-    """
-    Read a set of images for Panorama stitching
-    """
-    images = load_images("../Data/Train", "Set1", show=True)
-    """
-	Corner Detection
-	Save Corner detection output as corners.png
-	"""
-    """
-	Perform ANMS: Adaptive Non-Maximal Suppression
-	Save ANMS output as anms.png
-	"""
-    harris_outputs = detect_corners(images, 'Harris', show=True)
-    # outputs = run_ANMS(images, harris_outputs, 100, 'Harris', show=True)
-    # np.save("harris_anms2.npy", outputs)
+    best_inliers, H_hat = run_RANSAC(images[0], images[1], matches, threshold, iterations, show=True)
 
-    # shi_tomasi_outputs = detect_corners(images, 'Shi-Tomasi', max_corners=150, show=True)
-    # outputs = run_ANMS(images, shi_tomasi_outputs, 100, 'Shi-Tomasi', show=True)
-    # np.save("shi_tomasi_anms.npy", outputs)
-
-    """
-	Feature Descriptors
-	Save Feature Descriptor output as FD.png
-	"""
-    outputs = np.load("harris_anms2.npy", allow_pickle=True)
-    descriptors = extract_feature_descriptors(images, outputs)
-
-    # outputs = np.load("shi_tomasi_anms.npy", allow_pickle=True)
-    # descriptors = extract_feature_descriptors(images, outputs, 'Shi-Tomasi')
-
-    """
-	Feature Matching
-	Save Feature Matching output as matching.png
-	"""
-    matches = match_features(images[0], images[1], descriptors[0], descriptors[1], 0.8, show=True)
-    """
-	Refine: RANSAC, Estimate Homography
-	"""
-    best_inliers, H_hat = run_RANSAC(images[0], images[1], matches, 5, 2000, show=True)
     # Verify the homography matrix using cv2.findHomography as a reference
     # h_cv2 = cv2.findHomography(np.array([i[0] for i in best_inliers]), np.array([i[1] for i in best_inliers]),
     #                            cv2.RANSAC, 5.0)
@@ -524,11 +568,83 @@ def main():
     # print("Determinant CV2: ", np.linalg.det(h_cv2[0]))
     # print("Determinant Difference: ", np.linalg.det(h_cv2[0]) - np.linalg.det(H_hat))
 
+    blend_images(images[0], images[1], best_inliers, H_hat)
+
+
+global SavePath
+
+
+def main():
+    # Add any Command Line arguments here
+    Parser = argparse.ArgumentParser()
+    Parser.add_argument('--Path', default='../Data/Train', help='Path to the dataset, Default: ../Data/Train')
+    Parser.add_argument('--NumFeatures', default=100,
+                        help='Number of best features to extract from each image, Default:100')
+    Parser.add_argument('--Set', default='Set3', help='Dataset to use, Default: Set1')
+    Parser.add_argument('--Method', default='Shi-Tomasi", Default: Shi-Tomasi')
+    Parser.add_argument('--Iterations', default=3000, help='Number of iterations for RANSAC, Default: 2000')
+    Parser.add_argument('--Threshold', default=15, help='Threshold for RANSAC, Default: 10')
+    Parser.add_argument('--Mode', default='alpha', help='Blending mode to use, Default: alpha')
+    Parser.add_argument('--ColorCorrection', default=True, help='Perform color correction, Default: True')
+    Parser.add_argument('--SavePath', default='../Data/Results',
+                        help='Path to save the output, Default: ../Data/Results')
+    Parser.add_argument('--Save', default=True, help='Save the output, Default: True')
+    Parser.add_argument('--Show', default=True, help='Show the output, Default: True')
+
+    Args = Parser.parse_args()
+    Path = Args.Path
+    Set = Args.Set
+    Save = Args.Save
+    global SavePath
+    SavePath = os.path.join(Args.SavePath, Set)
+
+    NumFeatures = Args.NumFeatures
+    Method = Args.Method
+    Show = Args.Show
+    Threshold = Args.Threshold
+    Iterations = Args.Iterations
+
+    """
+    Read a set of images for Panorama stitching
+    """
+    images = load_images(Path, Set, show=Show)
+    os.makedirs(SavePath, exist_ok=True)
+
+    # A bunch of stuff for saving images:
+    # harris_corners = detect_corners(images, 'Harris', show=Show, save=Save)
+    # anms = run_ANMS(images, harris_corners, NumFeatures, 'Harris', show=Show, save=Save)
+    # descriptors = extract_feature_descriptors(images, anms)
+    # matches = match_features(images[0], images[1], descriptors[0], descriptors[1], 0.7, show=Show, save=Save)
+
+    # best_inliers, H_hat = run_RANSAC(images[0], images[1], matches, Threshold, Iterations, show=Show, save=Save)
+
+    # stitch_pair(images[0], images[1], NumFeatures, Threshold, Iterations, Method, Show)
+    make_panorama(images, NumFeatures, Threshold, Iterations, Method, Args.Mode, True, Save)
+
+    """
+	Corner Detection
+	Save Corner detection output as corners.png
+	"""
+
+    """
+	Perform ANMS: Adaptive Non-Maximal Suppression
+	Save ANMS output as anms.png
+	"""
+    """
+    Feature Descriptors
+    Save Feature Descriptor output as FD.png
+    """
+    """
+	Feature Matching
+	Save Feature Matching output as matching.png
+	"""
+    """
+	Refine: RANSAC, Estimate Homography
+	"""
     """
 	Image Warping + Blending
 	Save Panorama output as mypano.png
 	"""
-    blend_images(images[0], images[1], best_inliers, H_hat)
 
 
 if __name__ == "__main__":
